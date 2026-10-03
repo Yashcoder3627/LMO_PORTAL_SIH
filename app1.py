@@ -9,6 +9,7 @@ import easyocr
 import qrcode
 from fpdf import FPDF
 from flask import Flask, render_template, request, jsonify, send_file, session
+from sqlalchemy.engine import URL
 
 from database import db
 from models import Instrument, Inspection
@@ -31,10 +32,24 @@ STATIC_DIR = os.path.join(os.getcwd(), 'static')
 os.makedirs(CERT_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-# Local SQLite configuration
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///nawi_fallback.db"
+# MySQL configuration
+USER = "root"
+PASSWORD = "avinash17"
+HOST = "localhost"
+DATABASE = "nawi_database"
+
+connection_url = URL.create(
+    "mysql+pymysql",
+    username=USER,
+    password=PASSWORD,
+    host=HOST,
+    database=DATABASE
+)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = connection_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+# Database connect aur tables create karna
 db.init_app(app)
 with app.app_context():
     db.create_all()
@@ -71,12 +86,17 @@ def inspector_logout():
 # --- EASYOCR ROBUST DEEP LEARNING SCANNER ---
 
 def clean_and_parse_numbers(text_list):
+    """
+    Extracted OCR text se numbers, decimals aur kg/g units ko parse karke grams me convert karta hai.
+    """
     extracted = []
     for text in text_list:
+        # Common OCR digit confusion fixes for digital displays
         cleaned = text.upper()
         cleaned = cleaned.replace('O', '0').replace('D', '0').replace('I', '1').replace('L', '1').replace('S', '5')
         cleaned = cleaned.replace(',', '.')
 
+        # Find numbers with or without units (e.g., 999.8, 5.0kg, 1000g)
         matches = re.findall(r'(\d+(?:\.\d+)?)\s*(KG|G)?', cleaned)
         for num_str, unit in matches:
             try:
@@ -108,15 +128,21 @@ def ocr_scan():
         img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
 
         h, w = img.shape[:2]
+
+        # Spatial Zones based on visual overlay in the UI:
+        # Top 50% = Scale Display Reading Zone
+        # Bottom 50% = Standard Weight Stamp Zone
         top_zone = img[0:int(h * 0.52), 0:w]
         bottom_zone = img[int(h * 0.48):h, 0:w]
 
+        # EasyOCR deep-learning text extraction
         top_results = ocr_reader.readtext(top_zone, detail=0)
         bottom_results = ocr_reader.readtext(bottom_zone, detail=0)
 
         reading_candidates = clean_and_parse_numbers(top_results)
         standard_candidates = clean_and_parse_numbers(bottom_results)
 
+        # Fallback agar display top zone me properly crop na hua ho
         if not reading_candidates:
             full_results = ocr_reader.readtext(img, detail=0)
             all_candidates = clean_and_parse_numbers(full_results)
@@ -126,11 +152,13 @@ def ocr_scan():
         detected_reading = None
         detected_standard = None
 
+        # Prioritize decimal value for reading output
         if reading_candidates:
             decimals = [val for val, has_dot in reading_candidates if has_dot]
             detected_reading = decimals[0] if decimals else reading_candidates[0][0]
 
         if standard_candidates:
+            # Legal Metrology standard denominations
             benchmarks = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
             matched = [val for val, _ in standard_candidates if int(val) in benchmarks]
             detected_standard = matched[0] if matched else standard_candidates[0][0]
@@ -151,38 +179,6 @@ def ocr_scan():
         return jsonify({"status": "error", "message": f"Vision processing error: {str(e)}"}), 500
 
 
-# --- ADVANCED OIML R-76 MPE CALCULATION FUNCTION ---
-def calculate_advanced_mpe(load, scale_interval=1.0, accuracy_class="III"):
-    """
-    OIML R-76 guidelines ke mutabik Accuracy Class, Scale Interval (e), 
-    aur Applied Load ke base par exact MPE calculate karta hai.
-    """
-    if scale_interval <= 0:
-        scale_interval = 1.0
-        
-    n = load / scale_interval
-    class_upper = accuracy_class.upper()
-    
-    # Class-wise thresholds (l1, l2)
-    if class_upper == "I":
-        l1, l2 = 50000, 200000
-    elif class_upper == "II":
-        l1, l2 = 5000, 20000
-    elif class_upper == "III":
-        l1, l2 = 500, 2000
-    elif class_upper == "IIII":
-        l1, l2 = 50, 200
-    else:  # Default to Class III (Commercial)
-        l1, l2 = 500, 2000
-        
-    if n <= l1:
-        return round(0.5 * scale_interval, 3)
-    elif n <= l2:
-        return round(1.0 * scale_interval, 3)
-    else:
-        return round(1.5 * scale_interval, 3)
-
-
 # --- CALCULATION & OFFICIAL PDF CERTIFICATE GENERATION ---
 
 @app.route("/")
@@ -197,19 +193,11 @@ def check_weight():
 
     data = request.get_json() or {}
     shop_name = data.get("shop_name", "Unknown Shop").strip()
-    try:
-        standard = float(data.get("standard", 0))
-        reading = float(data.get("reading", 0))
-        scale_interval = float(data.get("scale_interval", 1.0))
-        accuracy_class = data.get("accuracy_class", "III")
-    except ValueError:
-        return jsonify({"status": "error", "message": "Invalid numeric values provided"}), 400
+    standard = float(data.get("standard", 0))
+    reading = float(data.get("reading", 0))
 
     error = round(abs(standard - reading), 3)
-    
-    # Advanced OIML R-76 MPE Calculation
-    allowed_error = calculate_advanced_mpe(standard, scale_interval, accuracy_class)
-    
+    allowed_error = 2.0
     issue_date = datetime.now().strftime("%d-%b-%Y %H:%M")
     cert_no = f"LM-GOI-{datetime.now().strftime('%Y%m')}-{os.urandom(2).hex().upper()}"
 
@@ -217,18 +205,19 @@ def check_weight():
         status = "PASS"
         color = "#00e676"
 
+        # 1. QR Code Generation
         qr_data = (
             f"Govt of India | Legal Metrology\n"
             f"Cert No: {cert_no}\n"
             f"Entity: {shop_name}\n"
-            f"Class: {accuracy_class} | e: {scale_interval}g\n"
             f"Standard: {standard}g | Reading: {reading}g\n"
-            f"Status: APPROVED (OIML R-76)\n"
+            f"Status: APPROVED\n"
             f"Date: {issue_date}"
         )
         qr_path = os.path.join(CERT_DIR, "qr.png")
         qrcode.make(qr_data).save(qr_path)
 
+        # 2. Official Certificate Generation
         pdf = FPDF(orientation="P", unit="mm", format="A4")
         pdf.add_page()
 
@@ -246,15 +235,15 @@ def check_weight():
 
         pdf.set_font("helvetica", "B", 15)
         pdf.set_text_color(0, 51, 102)
-        pdf.cell(w=190, h=7, txt="GOVERNMENT OF INDIA", ln=1, align="C")
+        pdf.cell(w=190, h=7, text="GOVERNMENT OF INDIA", new_x="LMARGIN", new_y="NEXT", align="C")
 
         pdf.set_font("helvetica", "B", 11)
         pdf.set_text_color(40, 40, 40)
-        pdf.cell(w=190, h=6, txt="DEPARTMENT OF CONSUMER AFFAIRS - LEGAL METROLOGY DIVISION", ln=1, align="C")
+        pdf.cell(w=190, h=6, text="DEPARTMENT OF CONSUMER AFFAIRS - LEGAL METROLOGY DIVISION", new_x="LMARGIN", new_y="NEXT", align="C")
 
         pdf.set_font("helvetica", "", 9)
         pdf.set_text_color(100, 100, 100)
-        pdf.cell(w=190, h=5, txt="Verification Certificate under Standards of Weights & Measures (OIML R-76)", ln=1, align="C")
+        pdf.cell(w=190, h=5, text="Verification Certificate under Standards of Weights & Measures (OIML R-76)", new_x="LMARGIN", new_y="NEXT", align="C")
 
         pdf.set_draw_color(0, 51, 102)
         pdf.set_line_width(0.5)
@@ -263,31 +252,30 @@ def check_weight():
         pdf.ln(8)
         pdf.set_text_color(50, 50, 50)
         pdf.set_font("helvetica", "B", 9)
-        pdf.cell(w=95, h=6, txt=f"Certificate ID: {cert_no}", ln=0)
-        pdf.cell(w=95, h=6, txt=f"Date & Time: {issue_date}", ln=1, align="R")
+        pdf.cell(w=95, h=6, text=f"Certificate ID: {cert_no}", new_x="RIGHT")
+        pdf.cell(w=95, h=6, text=f"Date & Time: {issue_date}", new_x="LMARGIN", new_y="NEXT", align="R")
 
         pdf.ln(5)
         pdf.set_fill_color(0, 51, 102)
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("helvetica", "B", 10)
-        pdf.cell(w=170, h=8, txt="   INSPECTION & CALIBRATION RECORD", ln=1, fill=True)
+        pdf.cell(w=170, h=8, text="  INSPECTION & CALIBRATION RECORD", new_x="LMARGIN", new_y="NEXT", fill=True)
 
         def add_table_row(field, value, is_even=False):
             pdf.set_fill_color(245, 247, 250) if is_even else pdf.set_fill_color(255, 255, 255)
             pdf.set_text_color(50, 50, 50)
             pdf.set_font("helvetica", "B", 9)
-            pdf.cell(w=75, h=8, txt=f"   {field}", border=1, ln=0, fill=is_even)
+            pdf.cell(w=75, h=8, text=f"  {field}", border=1, new_x="RIGHT", fill=is_even)
             pdf.set_font("helvetica", "", 9)
-            pdf.cell(w=95, h=8, txt=f"   {value}", border=1, ln=1, fill=is_even)
+            pdf.cell(w=95, h=8, text=f"  {value}", border=1, new_x="LMARGIN", new_y="NEXT", fill=is_even)
 
         add_table_row("Entity / Establishment Name", shop_name, is_even=False)
         add_table_row("Inspecting Officer ID", str(session.get('inspector')), is_even=True)
-        add_table_row("Accuracy Class & Interval (e)", f"Class {accuracy_class} (e = {scale_interval} g)", is_even=False)
-        add_table_row("Standard Working Mass Applied", f"{standard} g", is_even=True)
-        add_table_row("Instrument Reading Output", f"{reading} g", is_even=False)
-        add_table_row("Calculated Error (E)", f"{error} g", is_even=True)
-        add_table_row("Max Permissible Error (MPE)", f"+/- {allowed_error} g (OIML R-76)", is_even=False)
-        add_table_row("Verification Verdict", "PASSED & DIGITALLY STAMPED", is_even=True)
+        add_table_row("Standard Working Mass Applied", f"{standard} g", is_even=False)
+        add_table_row("Instrument Reading Output", f"{reading} g", is_even=True)
+        add_table_row("Calculated Error (E)", f"{error} g", is_even=False)
+        add_table_row("Max Permissible Error (MPE)", "+/- 2.0 g", is_even=True)
+        add_table_row("Verification Verdict", "PASSED & DIGITALLY STAMPED", is_even=False)
 
         pdf.ln(10)
         pdf.set_draw_color(200, 200, 200)
@@ -298,25 +286,25 @@ def check_weight():
         pdf.set_xy(72, 145)
         pdf.set_font("helvetica", "B", 11)
         pdf.set_text_color(0, 100, 0)
-        pdf.cell(w=110, h=6, txt="DIGITALLY VERIFIED AND SEALED", ln=1)
+        pdf.cell(w=110, h=6, text="DIGITALLY VERIFIED AND SEALED", new_x="LMARGIN", new_y="NEXT")
 
         pdf.set_xy(72, 153)
         pdf.set_font("helvetica", "", 8)
         pdf.set_text_color(80, 80, 80)
-        pdf.multi_cell(w=110, h=4, txt="This equipment complies with statutory provisions of Legal Metrology Act, 2009. The non-automatic weighing instrument is certified for commercial trade usage.\nScan the QR code to authenticate verification records on the national portal.")
+        pdf.multi_cell(w=110, h=4, text="This equipment complies with statutory provisions of Legal Metrology Act, 2009. The non-automatic weighing instrument is certified for commercial trade usage.\nScan the QR code to authenticate verification records on the national portal.")
 
         pdf.set_xy(110, 215)
         pdf.set_font("helvetica", "B", 9)
         pdf.set_text_color(30, 30, 30)
-        pdf.cell(w=75, h=5, txt="Authorised Legal Metrology Officer", ln=1, align="C")
+        pdf.cell(w=75, h=5, text="Authorised Legal Metrology Officer", new_x="LMARGIN", new_y="NEXT", align="C")
         pdf.set_xy(110, 220)
         pdf.set_font("helvetica", "", 8)
-        pdf.cell(w=75, h=4, txt="Govt. of India, Inspection Directorate", ln=1, align="C")
+        pdf.cell(w=75, h=4, text="Govt. of India, Inspection Directorate", new_x="LMARGIN", new_y="NEXT", align="C")
 
         pdf.set_xy(10, 270)
         pdf.set_font("helvetica", "I", 7)
         pdf.set_text_color(130, 130, 130)
-        pdf.cell(w=190, h=4, txt="System generated certificate under Rule 11. No physical signature required if digitally sealed.", align="C")
+        pdf.cell(w=190, h=4, text="System generated certificate under Rule 11. No physical signature required if digitally sealed.", align="C")
 
         safe_filename = "".join(c for c in shop_name if c.isalnum() or c in (" ", "_", "-")).strip()
         pdf_filename = f"{safe_filename}_Certificate.pdf"
@@ -328,6 +316,7 @@ def check_weight():
         color = "#ff3366"
         pdf_url = None
 
+    # Save Inspection Record to Database
     try:
         record = Inspection(
             shop_name=shop_name,

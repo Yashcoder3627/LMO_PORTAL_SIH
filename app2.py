@@ -31,10 +31,11 @@ STATIC_DIR = os.path.join(os.getcwd(), 'static')
 os.makedirs(CERT_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-# Local SQLite configuration
+# Local SQLite configuration to prevent MySQL connection errors
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///nawi_fallback.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+# Database connect aur tables create karna
 db.init_app(app)
 with app.app_context():
     db.create_all()
@@ -151,38 +152,6 @@ def ocr_scan():
         return jsonify({"status": "error", "message": f"Vision processing error: {str(e)}"}), 500
 
 
-# --- ADVANCED OIML R-76 MPE CALCULATION FUNCTION ---
-def calculate_advanced_mpe(load, scale_interval=1.0, accuracy_class="III"):
-    """
-    OIML R-76 guidelines ke mutabik Accuracy Class, Scale Interval (e), 
-    aur Applied Load ke base par exact MPE calculate karta hai.
-    """
-    if scale_interval <= 0:
-        scale_interval = 1.0
-        
-    n = load / scale_interval
-    class_upper = accuracy_class.upper()
-    
-    # Class-wise thresholds (l1, l2)
-    if class_upper == "I":
-        l1, l2 = 50000, 200000
-    elif class_upper == "II":
-        l1, l2 = 5000, 20000
-    elif class_upper == "III":
-        l1, l2 = 500, 2000
-    elif class_upper == "IIII":
-        l1, l2 = 50, 200
-    else:  # Default to Class III (Commercial)
-        l1, l2 = 500, 2000
-        
-    if n <= l1:
-        return round(0.5 * scale_interval, 3)
-    elif n <= l2:
-        return round(1.0 * scale_interval, 3)
-    else:
-        return round(1.5 * scale_interval, 3)
-
-
 # --- CALCULATION & OFFICIAL PDF CERTIFICATE GENERATION ---
 
 @app.route("/")
@@ -200,16 +169,11 @@ def check_weight():
     try:
         standard = float(data.get("standard", 0))
         reading = float(data.get("reading", 0))
-        scale_interval = float(data.get("scale_interval", 1.0))
-        accuracy_class = data.get("accuracy_class", "III")
     except ValueError:
         return jsonify({"status": "error", "message": "Invalid numeric values provided"}), 400
 
     error = round(abs(standard - reading), 3)
-    
-    # Advanced OIML R-76 MPE Calculation
-    allowed_error = calculate_advanced_mpe(standard, scale_interval, accuracy_class)
-    
+    allowed_error = 2.0
     issue_date = datetime.now().strftime("%d-%b-%Y %H:%M")
     cert_no = f"LM-GOI-{datetime.now().strftime('%Y%m')}-{os.urandom(2).hex().upper()}"
 
@@ -221,14 +185,14 @@ def check_weight():
             f"Govt of India | Legal Metrology\n"
             f"Cert No: {cert_no}\n"
             f"Entity: {shop_name}\n"
-            f"Class: {accuracy_class} | e: {scale_interval}g\n"
             f"Standard: {standard}g | Reading: {reading}g\n"
-            f"Status: APPROVED (OIML R-76)\n"
+            f"Status: APPROVED\n"
             f"Date: {issue_date}"
         )
         qr_path = os.path.join(CERT_DIR, "qr.png")
         qrcode.make(qr_data).save(qr_path)
 
+        # Fixed FPDF implementation using standard 'txt' and 'ln' parameters
         pdf = FPDF(orientation="P", unit="mm", format="A4")
         pdf.add_page()
 
@@ -282,12 +246,11 @@ def check_weight():
 
         add_table_row("Entity / Establishment Name", shop_name, is_even=False)
         add_table_row("Inspecting Officer ID", str(session.get('inspector')), is_even=True)
-        add_table_row("Accuracy Class & Interval (e)", f"Class {accuracy_class} (e = {scale_interval} g)", is_even=False)
-        add_table_row("Standard Working Mass Applied", f"{standard} g", is_even=True)
-        add_table_row("Instrument Reading Output", f"{reading} g", is_even=False)
-        add_table_row("Calculated Error (E)", f"{error} g", is_even=True)
-        add_table_row("Max Permissible Error (MPE)", f"+/- {allowed_error} g (OIML R-76)", is_even=False)
-        add_table_row("Verification Verdict", "PASSED & DIGITALLY STAMPED", is_even=True)
+        add_table_row("Standard Working Mass Applied", f"{standard} g", is_even=False)
+        add_table_row("Instrument Reading Output", f"{reading} g", is_even=True)
+        add_table_row("Calculated Error (E)", f"{error} g", is_even=False)
+        add_table_row("Max Permissible Error (MPE)", "+/- 2.0 g", is_even=True)
+        add_table_row("Verification Verdict", "PASSED & DIGITALLY STAMPED", is_even=False)
 
         pdf.ln(10)
         pdf.set_draw_color(200, 200, 200)

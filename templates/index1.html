@@ -128,7 +128,7 @@
             display: block;
         }
 
-        .input-glow, select.input-glow {
+        .input-glow {
             width: 100%;
             background: var(--bg-elevated);
             border: 1px solid var(--border-subtle);
@@ -141,7 +141,7 @@
             outline: none;
         }
 
-        .input-glow:focus, select.input-glow:focus {
+        .input-glow:focus {
             border-color: var(--primary-orange);
             box-shadow: 0 0 0 4px rgba(255, 106, 0, 0.25);
             background: #20273a;
@@ -670,8 +670,8 @@
                     <div class="stat-value">98.4%</div>
                 </div>
                 <div class="stat-card c-cyan">
-                    <div class="stat-label">OIML R-76 Standard</div>
-                    <div class="stat-value">Dynamic MPE</div>
+                    <div class="stat-label">Permissible MPE Limit</div>
+                    <div class="stat-value">± 2.0g</div>
                 </div>
                 <div class="stat-card c-purple">
                     <div class="stat-label">Vision OCR Engine</div>
@@ -692,7 +692,7 @@
                 </div>
 
                 <p style="color: var(--text-muted); line-height: 1.8; font-size: 0.95rem; margin-bottom: 24px;">
-                    The Legal Metrology Division under the <b>Ministry of Consumer Affairs, Food & Public Distribution</b> regulates the manufacturing, sale, and calibration of weighing and measuring instruments across Indian territory. This automated smart portal enables field enforcement officers to perform computerized compliance tests (Non-Automatic Weighing Instruments - NAWI), verify observed deviations against <b>OIML R-76 Maximum Permissible Error (MPE)</b> thresholds based on accuracy classes, and issue instantaneous digitally sealed certificates.
+                    The Legal Metrology Division under the <b>Ministry of Consumer Affairs, Food & Public Distribution</b> regulates the manufacturing, sale, and calibration of weighing and measuring instruments across Indian territory. This automated smart portal enables field enforcement officers to perform computerized compliance tests (Non-Automatic Weighing Instruments - NAWI), verify observed deviations against Maximum Permissible Error (MPE) thresholds, and issue instantaneous digitally sealed certificates.
                 </p>
 
                 <div class="panel-header" style="margin-top: 30px;">
@@ -748,7 +748,7 @@
             <!-- TAB 2: TEST MACHINE FORM -->
             <section id="tab_test" class="dashboard-panel" style="display: none;">
                 <div class="panel-header">
-                    <h2><span>⚖️</span> NAWI Machine Field Inspection (OIML R-76)</h2>
+                    <h2><span>⚖️</span> NAWI Machine Field Inspection</h2>
                     <span style="font-size: 0.85rem; color: var(--accent-cyan); font-family: var(--font-mono);">STATUTORY FORM: LMO-REG-V3</span>
                 </div>
 
@@ -757,20 +757,9 @@
                         <label class="field-label">Target Establishment Name</label>
                         <input type="text" id="shop_name" class="input-glow" placeholder="e.g. Gupta Sweets & Confectioneries">
 
-                        <label class="field-label">Accuracy Class (OIML R-76)</label>
-                        <select id="accuracy_class" class="input-glow">
-                            <option value="I">Class I (Special - Laboratory)</option>
-                            <option value="II">Class II (High - Jewellery/Gold)</option>
-                            <option value="III" selected>Class III (Medium - Commercial)</option>
-                            <option value="IIII">Class IIII (Ordinary - Heavy Industrial)</option>
-                        </select>
-
-                        <label class="field-label">Verification Scale Interval ($e$ in grams)</label>
-                        <input type="number" step="0.1" id="scale_interval" class="input-glow" value="1.0">
-
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                             <div>
-                                <label class="field-label">Standard Working Mass (g)</label>
+                                <label class="field-label">Standard Weight (g)</label>
                                 <input type="number" id="std_wt" class="input-glow" value="1000">
                             </div>
                             <div>
@@ -780,7 +769,7 @@
                         </div>
 
                         <button class="btn-gradient" onclick="runEngine()" style="margin-top: 10px;">
-                            <span>Execute Advanced Analysis & Stamp</span>
+                            <span>Execute Analysis & Stamp</span>
                             <span>⚡</span>
                         </button>
 
@@ -999,8 +988,6 @@
 
         function runEngine() {
             let shop = document.getElementById('shop_name').value.trim();
-            let accuracy_class = document.getElementById('accuracy_class').value;
-            let scale_interval = parseFloat(document.getElementById('scale_interval').value);
             let std = document.getElementById('std_wt').value;
             let read = document.getElementById('read_wt').value;
 
@@ -1012,13 +999,7 @@
             fetch('/calculate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    shop_name: shop, 
-                    accuracy_class: accuracy_class,
-                    scale_interval: scale_interval,
-                    standard: std, 
-                    reading: read 
-                })
+                body: JSON.stringify({ shop_name: shop, standard: std, reading: read })
             })
             .then(response => {
                 if (response.status === 401) { location.reload(); return; }
